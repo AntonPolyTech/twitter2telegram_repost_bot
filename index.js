@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import TelegramBot from 'node-telegram-bot-api';
 import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
+import translate from '@iamtraction/google-translate';
 import fs from 'fs';
 
 dotenv.config();
@@ -69,17 +70,14 @@ async function checkTweets() {
             return;
         }
 
-        // Отсортируем по возрастанию — старые впереди
         tweets.reverse();
 
-        // При первом запуске присылаем последние 5 твитов, иначе только новые с момента lastTweetId
         let newTweets;
 
         if (isFirstRun) {
-            newTweets = tweets.slice(-5); // последние 5
+            newTweets = tweets.slice(-5);
             isFirstRun = false;
         } else {
-            // Берём только твиты, которые идут после lastTweetId
             const index = tweets.findIndex(t => t.tweetId === lastTweetId);
             newTweets = index === -1 ? tweets : tweets.slice(index + 1);
         }
@@ -90,7 +88,17 @@ async function checkTweets() {
         }
 
         for (const tweet of newTweets) {
-            const message = `🐦 <b>Новый твит от BarcaUniversal</b>\n\n${tweet.text}\n\n🔗 <a href="${tweet.tweetUrl}">Открыть в браузере</a>`;
+            let translatedText = '';
+            try {
+                const res = await translate(tweet.text, { to: 'ru' });
+                translatedText = res.text;
+            } catch (err) {
+                console.error('❌ Ошибка перевода:', err.message || err);
+                translatedText = '⚠️ Ошибка перевода.';
+            }
+
+            const message = `🐦 <b>Новый твит от BarcaUniversal</b>\n\n${tweet.text}\n\n🌐 <b>Перевод:</b>\n${translatedText}\n\n🔗 <a href="${tweet.tweetUrl}">Открыть в браузере</a>`;
+
             await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, message, { parse_mode: 'HTML' });
             lastTweetId = tweet.tweetId;
             saveLastTweetId(lastTweetId);
