@@ -1,115 +1,106 @@
-import fs from 'fs';
 import dotenv from 'dotenv';
-import { TwitterApi } from 'twitter-api-v2';
 import TelegramBot from 'node-telegram-bot-api';
-import translate from '@iamtraction/google-translate';
+import fetch from 'node-fetch';
+import * as cheerio from 'cheerio';
+import fs from 'fs';
 
 dotenv.config();
 
-const twitter = new TwitterApi(process.env.TWITTER_BEARER_TOKEN);
-const roClient = twitter.readOnly;
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: false });
+const NITTER_URL = 'https://nitter.net/BarcaUniversal';
+const LAST_TWEET_FILE = 'last_tweet_id.txt';
+const INTERVAL_MINUTES = 15;
 
-const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
-
-const TWITTER_USER_ID = process.env.TWITTER_USERID;
-const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
-const LAST_ID_FILE = 'last_id.txt';
-
-// Загрузка lastSentId из файла
-function loadLastId() {
+function loadLastTweetId() {
     try {
-        return fs.readFileSync(LAST_ID_FILE, 'utf8');
-    } catch (e) {
+        return fs.readFileSync(LAST_TWEET_FILE, 'utf8').trim();
+    } catch {
         return null;
     }
 }
 
-// Сохранение lastSentId в файл
-function saveLastId(id) {
+function saveLastTweetId(id) {
     try {
-        fs.writeFileSync(LAST_ID_FILE, id, 'utf8');
-    } catch (e) {
-        console.error('⚠️ Не удалось сохранить lastSentId:', e);
+        fs.writeFileSync(LAST_TWEET_FILE, id, 'utf8');
+    } catch (err) {
+        console.error('❌ Ошибка сохранения last tweet id:', err);
     }
 }
 
-let lastSentId = loadLastId();
+let lastTweetId = loadLastTweetId();
+let isFirstRun = lastTweetId === null;
 
-async function fetchTweets() {
-    const timeline = await roClient.v2.userTimeline(TWITTER_USER_ID, {
-        max_results: 5,
-        'tweet.fields': ['created_at', 'text', 'attachments'],
-        expansions: ['attachments.media_keys'],
-        'media.fields': ['url', 'preview_image_url', 'type'],
-        exclude: 'replies',
-    });
-
-    return {
-        tweets: timeline?.data?.data || [],
-        media: timeline?.data?.includes?.media || [],
-    };
-}
-
-function getTweetMedia(tweet, allMedia) {
-    const keys = tweet.attachments?.media_keys;
-    if (!keys) return [];
-
-    return allMedia.filter(m => keys.includes(m.media_key) && m.type === 'photo');
-}
-
-async function checkAndSend() {
+async function checkTweets() {
     try {
-        const { tweets, media } = await fetchTweets();
+        const res = await fetch(NITTER_URL, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+        });
 
-        if (!Array.isArray(tweets)) {
-            console.error('❌ Tweets is not an array:', tweets);
+        if (res.status === 429) {
+            console.warn('⚠️ Слишком много запросов к Nitter — сервер заблокировал на время.');
+            return;
+        }
+        if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+
+        const html = await res.text();
+        const $ = cheerio.load(html);
+
+        const tweets = [];
+
+        $('.timeline-item').each((i, el) => {
+            const href = $(el).find('a.tweet-link').attr('href');
+            if (!href) return;
+
+            const match = href.match(/status\/(\d+)/);
+            if (!match) return;
+            const tweetId = match[1];
+
+            const text = $(el).find('.tweet-content').text().trim();
+            const tweetUrl = `https://nitter.net${href.split('#')[0]}`;
+
+            tweets.push({ tweetId, text, tweetUrl });
+        });
+
+        if (!tweets.length) {
+            console.log('⚠️ Твиты не найдены на странице.');
             return;
         }
 
-        for (const tweet of tweets.reverse()) {
-            if (tweet.id === lastSentId) continue;
+        // Отсортируем по возрастанию — старые впереди
+        tweets.reverse();
 
-            const images = getTweetMedia(tweet, media);
-            let translationText = '';
+        // При первом запуске присылаем последние 5 твитов, иначе только новые с момента lastTweetId
+        let newTweets;
 
-            try {
-                const res = await translate(tweet.text, { to: 'ru' });
-                translationText = res.text;
-            } catch (transErr) {
-                console.error('❌ Ошибка перевода:', transErr);
-                translationText = '⚠️ Ошибка перевода.';
-            }
-
-            const caption = `🐦 <b>Твит:</b>\n🕓 ${tweet.created_at}\n\n${tweet.text}\n\n🌐 <b>Перевод:</b>\n${translationText}`;
-
-            if (images.length > 0) {
-                const mediaGroup = images.slice(0, 10).map((img, index) => ({
-                    type: 'photo',
-                    media: img.url,
-                    ...(index === 0 ? { caption, parse_mode: 'HTML' } : {}),
-                }));
-
-                await bot.sendMediaGroup(TG_CHAT_ID, mediaGroup);
-            } else {
-                await bot.sendMessage(TG_CHAT_ID, caption, { parse_mode: 'HTML' });
-            }
-
-            lastSentId = tweet.id;
-            saveLastId(tweet.id); // сохраняем
-        }
-    } catch (err) {
-        if (err.code === 429) {
-            const resetTime = err.rateLimit?.reset
-                ? new Date(err.rateLimit.reset * 1000).toLocaleTimeString()
-                : 'позже';
-            console.warn(`⏳ Rate limit exceeded. Try again after ${resetTime}`);
+        if (isFirstRun) {
+            newTweets = tweets.slice(-5); // последние 5
+            isFirstRun = false;
         } else {
-            console.error('❌ Ошибка при получении твитов:', err);
+            // Берём только твиты, которые идут после lastTweetId
+            const index = tweets.findIndex(t => t.tweetId === lastTweetId);
+            newTweets = index === -1 ? tweets : tweets.slice(index + 1);
         }
+
+        if (newTweets.length === 0) {
+            console.log('ℹ️ Новых твитов нет.');
+            return;
+        }
+
+        for (const tweet of newTweets) {
+            const message = `🐦 <b>Новый твит от BarcaUniversal</b>\n\n${tweet.text}\n\n🔗 <a href="${tweet.tweetUrl}">Открыть в браузере</a>`;
+            await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, message, { parse_mode: 'HTML' });
+            lastTweetId = tweet.tweetId;
+            saveLastTweetId(lastTweetId);
+        }
+
+    } catch (err) {
+        console.error('❌ Ошибка при получении твитов:', err.message || err);
     }
 }
 
-bot.sendMessage(TG_CHAT_ID, '🔔 Бот запущен!');
-setInterval(checkAndSend, 5 * 60 * 1000);
-checkAndSend();
+console.log('🔔 Бот запущен и слушает твиты через Nitter...');
+checkTweets();
+setInterval(checkTweets, INTERVAL_MINUTES * 60 * 1000);
