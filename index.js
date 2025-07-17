@@ -60,9 +60,17 @@ async function checkTweets() {
             const tweetId = match[1];
 
             const text = $(el).find('.tweet-content').text().trim();
-            const tweetUrl = `https://nitter.net${href.split('#')[0]}`;
 
-            tweets.push({ tweetId, text, tweetUrl });
+            // Найдём картинки
+            const imageUrls = [];
+            $(el).find('.attachments .attachment.image img').each((i, imgEl) => {
+                const src = $(imgEl).attr('src');
+                if (src && src.startsWith('/pic/')) {
+                    imageUrls.push(`https://nitter.net${src}`);
+                }
+            });
+
+            tweets.push({ tweetId, text, imageUrls });
         });
 
         if (!tweets.length) {
@@ -97,9 +105,31 @@ async function checkTweets() {
                 translatedText = '⚠️ Ошибка перевода.';
             }
 
-            const message = `🐦 <b>Новый твит от BarcaUniversal</b>\n\n${tweet.text}\n\n🌐 <b>Перевод:</b>\n${translatedText}\n\n🔗 <a href="${tweet.tweetUrl}">Открыть в браузере</a>`;
+            const messageText = `🐦 <b>Новый твит от BarcaUniversal</b>\n\n${tweet.text}\n\n🌐 <b>Перевод:</b>\n${translatedText}`;
 
-            await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, message, { parse_mode: 'HTML' });
+            if (tweet.imageUrls.length === 0) {
+                await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, messageText, { parse_mode: 'HTML' });
+            } else if (tweet.imageUrls.length === 1) {
+                await bot.sendPhoto(process.env.TELEGRAM_CHAT_ID, tweet.imageUrls[0], {
+                    caption: messageText,
+                    parse_mode: 'HTML'
+                });
+            } else {
+                const mediaGroup = tweet.imageUrls.map((url, index) => ({
+                    type: 'photo',
+                    media: url,
+                    ...(index === 0 ? { caption: messageText, parse_mode: 'HTML' } : {})
+                }));
+
+                try {
+                    await bot.sendMediaGroup(process.env.TELEGRAM_CHAT_ID, mediaGroup);
+                } catch (err) {
+                    console.error('❌ Ошибка отправки медиа-группы:', err.message || err);
+                    // fallback — хотя бы просто текст
+                    await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, messageText, { parse_mode: 'HTML' });
+                }
+            }
+
             lastTweetId = tweet.tweetId;
             saveLastTweetId(lastTweetId);
         }
