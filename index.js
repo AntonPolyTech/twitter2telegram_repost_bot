@@ -52,6 +52,9 @@ async function checkTweets() {
         const tweets = [];
 
         $('.timeline-item').each((i, el) => {
+            const isPinned = $(el).find('.pinned').length > 0 || $(el).text().includes('Pinned');
+            if (isPinned) return;
+
             const href = $(el).find('a.tweet-link').attr('href');
             if (!href) return;
 
