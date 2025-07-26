@@ -52,8 +52,11 @@ async function checkTweets() {
         const tweets = [];
 
         $('.timeline-item').each((i, el) => {
-            const isPinned = $(el).find('.pinned').length > 0 || $(el).text().includes('Pinned');
-            if (isPinned) return;
+            const isPinned = $(el).find('.icon-pin').length > 0;
+            if (isPinned) {
+                console.log('📌 Пропущен закреплённый твит');
+                return;
+            }
 
             const href = $(el).find('a.tweet-link').attr('href');
             if (!href) return;
@@ -64,7 +67,6 @@ async function checkTweets() {
 
             const text = $(el).find('.tweet-content').text().trim();
 
-            // Найдём картинки
             const imageUrls = [];
             $(el).find('.attachments .attachment.image img').each((i, imgEl) => {
                 const src = $(imgEl).attr('src');
@@ -128,7 +130,6 @@ async function checkTweets() {
                     await bot.sendMediaGroup(process.env.TELEGRAM_CHAT_ID, mediaGroup);
                 } catch (err) {
                     console.error('❌ Ошибка отправки медиа-группы:', err.message || err);
-                    // fallback — хотя бы просто текст
                     await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, messageText, { parse_mode: 'HTML' });
                 }
             }
