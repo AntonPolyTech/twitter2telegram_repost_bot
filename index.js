@@ -113,24 +113,18 @@ async function checkTweets() {
             const messageText = `🐦 <b>Новый твит от BarcaUniversal</b>\n\n${tweet.text}\n\n🌐 <b>Перевод:</b>\n${translatedText}`;
 
             if (tweet.imageUrls.length === 0) {
+                // твит без фото
                 await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, messageText, { parse_mode: 'HTML' });
-            } else if (tweet.imageUrls.length === 1) {
-                await bot.sendPhoto(process.env.TELEGRAM_CHAT_ID, tweet.imageUrls[0], {
-                    caption: messageText,
-                    parse_mode: 'HTML'
-                });
             } else {
-                const mediaGroup = tweet.imageUrls.map((url, index) => ({
-                    type: 'photo',
-                    media: url,
-                    ...(index === 0 ? { caption: messageText, parse_mode: 'HTML' } : {})
-                }));
+                // отправляем каждое фото как документ (без сжатия)
+                for (let i = 0; i < tweet.imageUrls.length; i++) {
+                    const response = await fetch(tweet.imageUrls[i]);
+                    const buffer = Buffer.from(await response.arrayBuffer());
 
-                try {
-                    await bot.sendMediaGroup(process.env.TELEGRAM_CHAT_ID, mediaGroup);
-                } catch (err) {
-                    console.error('❌ Ошибка отправки медиа-группы:', err.message || err);
-                    await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, messageText, { parse_mode: 'HTML' });
+                    await bot.sendDocument(process.env.TELEGRAM_CHAT_ID, buffer, {
+                        filename: `image_${i + 1}.jpg`,
+                        ...(i === 0 ? { caption: messageText, parse_mode: 'HTML' } : {})
+                    });
                 }
             }
 
