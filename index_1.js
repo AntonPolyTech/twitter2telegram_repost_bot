@@ -2,14 +2,12 @@ import dotenv from 'dotenv';
 import TelegramBot from 'node-telegram-bot-api';
 import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
-import translate from '@iamtraction/google-translate';
 import fs from 'fs';
-import path from 'path';
 
 dotenv.config();
 
-const bot = new TelegramBot(process.env.BLAU_TELEGRAM_TOKEN, { polling: false });
-const NITTER_URL = 'https://nitter.net/BarcaUniversal';
+const bot = new TelegramBot(process.env.OOC_TELEGRAM_TOKEN, { polling: false });
+const NITTER_URL = 'https://nitter.net/nocontextfooty';
 const LAST_TWEET_FILE = 'last_tweet_id.txt';
 const INTERVAL_MINUTES = 30;
 
@@ -54,10 +52,14 @@ async function checkTweets() {
 
         $('.timeline-item').each((i, el) => {
             const isPinned = $(el).find('.icon-pin').length > 0;
-            if (isPinned) return;
+            if (isPinned) {
+                console.log('📌 Пропущен закреплённый твит');
+                return;
+            }
 
             const href = $(el).find('a.tweet-link').attr('href');
             if (!href) return;
+
             const match = href.match(/status\/(\d+)/);
             if (!match) return;
             const tweetId = match[1];
@@ -66,16 +68,9 @@ async function checkTweets() {
 
             const imageUrls = [];
             $(el).find('.attachments .attachment.image img').each((i, imgEl) => {
-                let src = $(imgEl).attr('src');
+                const src = $(imgEl).attr('src');
                 if (src && src.startsWith('/pic/')) {
-                    // превращаем в оригинальное качество Twitter CDN
-                    // пример: /pic/media%2FF6cU7SWXYAApU8X.jpg?name=small
-                    const filenameMatch = decodeURIComponent(src).match(/\/media\/([^?]+)/);
-                    if (filenameMatch) {
-                        const filename = filenameMatch[1];
-                        const twitterUrl = `https://pbs.twimg.com/media/${filename}?name=orig`;
-                        imageUrls.push(twitterUrl);
-                    }
+                    imageUrls.push(`https://nitter.net${src}`);
                 }
             });
 
@@ -90,6 +85,7 @@ async function checkTweets() {
         tweets.reverse();
 
         let newTweets;
+
         if (isFirstRun) {
             newTweets = tweets.slice(-5);
             isFirstRun = false;
@@ -104,53 +100,27 @@ async function checkTweets() {
         }
 
         for (const tweet of newTweets) {
-            let translatedText = '';
-            try {
-                const res = await translate(tweet.text, { to: 'ru' });
-                translatedText = res.text;
-            } catch (err) {
-                console.error('❌ Ошибка перевода:', err.message || err);
-                translatedText = '⚠️ Ошибка перевода.';
-            }
-
-            const messageText = `🐦 <b>Новый твит от BarcaUniversal</b>\n\n${tweet.text}\n\n🌐 <b>Перевод:</b>\n${translatedText}`;
+            const messageText = `new post`;
 
             if (tweet.imageUrls.length === 0) {
-                await bot.sendMessage(process.env.BLAU_TELEGRAM_CHAT_ID, messageText, { parse_mode: 'HTML' });
+                await bot.sendMessage(process.env.OOC_TELEGRAM_CHAT_ID, messageText, { parse_mode: 'HTML' });
+            } else if (tweet.imageUrls.length === 1) {
+                await bot.sendPhoto(process.env.OOC_TELEGRAM_CHAT_ID, tweet.imageUrls[0], {
+                    caption: messageText,
+                    parse_mode: 'HTML'
+                });
             } else {
-                for (let i = 0; i < tweet.imageUrls.length; i++) {
-                    try {
-                        const response = await fetch(tweet.imageUrls[i], {
-                            headers: { 'User-Agent': 'Mozilla/5.0' }
-                        });
+                const mediaGroup = tweet.imageUrls.map((url, index) => ({
+                    type: 'photo',
+                    media: url,
+                    ...(index === 0 ? { caption: messageText, parse_mode: 'HTML' } : {})
+                }));
 
-                        if (!response.ok) {
-                            console.warn(`⚠️ Не удалось скачать фото: ${tweet.imageUrls[i]}`);
-                            continue;
-                        }
-
-                        const buffer = Buffer.from(await response.arrayBuffer());
-
-                        // временный файл
-                        const filePath = path.join(
-                            process.cwd(),
-                            `tweet_${tweet.tweetId}_${i + 1}.jpg`
-                        );
-                        fs.writeFileSync(filePath, buffer);
-
-                        // отправляем как файл (документ)
-                        await bot.sendDocument(
-                            process.env.BLAU_TELEGRAM_CHAT_ID,
-                            filePath,
-                            {
-                                ...(i === 0 ? { caption: messageText, parse_mode: 'HTML' } : {})
-                            }
-                        );
-
-                        fs.unlinkSync(filePath); // удаляем после отправки
-                    } catch (err) {
-                        console.error('❌ Ошибка отправки фото:', err.message || err);
-                    }
+                try {
+                    await bot.sendMediaGroup(process.env.OOC_TELEGRAM_CHAT_ID, mediaGroup);
+                } catch (err) {
+                    console.error('❌ Ошибка отправки медиа-группы:', err.message || err);
+                    await bot.sendMessage(process.env.OOC_TELEGRAM_CHAT_ID, messageText, { parse_mode: 'HTML' });
                 }
             }
 
